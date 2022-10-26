@@ -1,0 +1,11 @@
+name: Gringotts
+version: '${project.version}'
+main: com.oglofus.gringottsprototypingpaper.GringottsPrototypingPaper
+api-version: 1.19
+
+awareness:
+  - !@UTF-8
+
+commands:
+  vault:
+    usage: "/vault create"
