@@ -9,3 +9,5 @@ awareness:
 commands:
   vault:
     usage: "/vault create"
+  money:
+    usage: "/money"

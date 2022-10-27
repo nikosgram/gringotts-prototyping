@@ -3,8 +3,10 @@ package com.oglofus.gringottsprototypingpaper;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.*;
-import org.bukkit.command.PluginCommand;
+import org.bukkit.command.*;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -13,13 +15,44 @@ import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.DoubleChestInventory;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 
 // id = type + "_" + owner
-record Account(String id, String owner, String type) {}
+record Account(String id, String owner, String type) {
+    public double calculateMoney() {
+        return GringottsPrototypingPaper.VAULT_LINK_MAP.getOrDefault(id, new ArrayList<>()).stream()
+                .map(GringottsPrototypingPaper.VAULT_MAP::get).mapToDouble(vault -> {
+                    UUID  worldUuid = vault.world();
+                    World world     = Bukkit.getWorld(worldUuid);
+
+                    if (world == null) {
+                        return 0;
+                    }
+
+                    Vec3d vec3d = vault.vec();
+
+                    Block      block      = world.getBlockAt(vec3d.x(), vec3d.y(), vec3d.z());
+                    BlockState blockState = block.getState();
+
+                    double total = 0;
+
+                    if (blockState instanceof Container container) {
+                        total += container.getInventory().all(Material.EMERALD).values().parallelStream()
+                                .mapToDouble(ItemStack::getAmount).sum();
+                        total += container.getInventory().all(Material.EMERALD_BLOCK).values().parallelStream()
+                                .mapToDouble(ItemStack::getAmount).sum() * 9;
+                    }
+
+                    return total;
+                }).sum();
+
+    }
+}
 
 record Vec3d(int x, int y, int z) {
     @Override
@@ -44,6 +77,127 @@ record Vault(String id, Vec3d vec, UUID world, String[] accounts) {
     public static String getId(Location location) {
         return location.getWorld().getUID() + "_" + location.getBlockX() + "_" + location.getBlockY() + "_" +
                 location.getBlockZ();
+    }
+}
+
+class VaultCommand implements CommandExecutor, TabCompleter {
+    public static final List<String> commands = new ArrayList<>();
+
+    static {
+        commands.add("add");
+        commands.add("create");
+        commands.add("list");
+    }
+
+    @Override
+    public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label,
+                             @NotNull String[] args) {
+        if (!(sender instanceof Player player)) {
+            return false;
+        }
+
+        if (args.length < 1) {
+            return false;
+        }
+
+        UUID   playerUuid = player.getUniqueId();
+        String accountId  = "player_" + playerUuid;
+
+        switch (args[0].toLowerCase()) {
+            case "add" -> {
+                if (args.length < 2) {
+                    return false;
+                }
+
+                String targetPlayer     = args[1];
+                UUID   targetPlayerUuid = Bukkit.getPlayerUniqueId(targetPlayer);
+
+                if (targetPlayerUuid == null) {
+                    player.sendMessage(
+                            Component.text("player `" + targetPlayer + "` has never played on this server before!"));
+
+                    return true;
+                }
+
+                GringottsPrototypingPaper.VAULT_CREATION_PLAYERS.remove(playerUuid);
+
+                GringottsPrototypingPaper.VAULT_APPENDING_PLAYERS.put(playerUuid, targetPlayerUuid);
+
+                player.sendMessage(Component.text("Click on a chest to give access to `" + targetPlayer + "`!"));
+
+                return true;
+            }
+            case "create" -> {
+                GringottsPrototypingPaper.VAULT_APPENDING_PLAYERS.remove(playerUuid);
+
+                GringottsPrototypingPaper.VAULT_CREATION_PLAYERS.add(playerUuid);
+
+                player.sendMessage(Component.text("Click on a chest to create a new vault!"));
+
+                return true;
+            }
+            case "list" -> {
+                List<String> vaults = GringottsPrototypingPaper.VAULT_LINK_MAP.getOrDefault(accountId, null);
+
+                if (vaults == null) {
+                    player.sendMessage(Component.text("You have no vaults!"));
+
+                    return true;
+                }
+
+                Component component = Component.empty();
+
+                for (String vaultId : vaults) {
+                    component = component.append(Component.text(vaultId)).append(Component.newline());
+                }
+
+                player.sendMessage(component);
+
+                return true;
+            }
+            default -> {
+                return false;
+            }
+        }
+    }
+
+    @Override
+    public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command,
+                                                @NotNull String label, @NotNull String[] args) {
+        if (!(sender instanceof Player)) {
+            return null;
+        }
+
+        return commands;
+    }
+}
+
+class MoneyCommand implements CommandExecutor, TabCompleter {
+
+    @Override
+    public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label,
+                             @NotNull String[] args) {
+        if (!(sender instanceof Player player)) {
+            return false;
+        }
+
+        UUID    playerUuid = player.getUniqueId();
+        String  accountId  = "player_" + playerUuid;
+        Account account    = GringottsPrototypingPaper.ACCOUNT_MAP.get(accountId);
+
+        long   startTime = System.currentTimeMillis();
+        double sum       = account.calculateMoney();
+        long   total     = System.currentTimeMillis() - startTime;
+
+        player.sendMessage(Component.text("sum of " + sum + " took " + total + "ms"));
+
+        return true;
+    }
+
+    @Override
+    public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command,
+                                                @NotNull String label, @NotNull String[] args) {
+        return null;
     }
 }
 
@@ -74,8 +228,6 @@ public final class GringottsPrototypingPaper extends JavaPlugin implements Liste
 
         if (blockState instanceof Chest chest) {
             Inventory inventory = chest.getInventory();
-
-            System.out.println(inventory.getClass().getName());
 
             if (inventory instanceof DoubleChestInventory) {
                 DoubleChest doubleChest = (DoubleChest) inventory.getHolder();
@@ -131,6 +283,17 @@ public final class GringottsPrototypingPaper extends JavaPlugin implements Liste
             vaultCommandPlugin.setTabCompleter(vaultCommand);
         } else {
             getLogger().warning("vault command is occupied");
+        }
+
+        PluginCommand moneyCommandPlugin = getCommand("money");
+
+        if (moneyCommandPlugin != null) {
+            MoneyCommand moneyCommand = new MoneyCommand();
+
+            moneyCommandPlugin.setExecutor(moneyCommand);
+            moneyCommandPlugin.setTabCompleter(moneyCommand);
+        } else {
+            getLogger().warning("money command is occupied");
         }
     }
 
